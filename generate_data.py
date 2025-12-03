@@ -1,16 +1,20 @@
 """
 Generate synthetic university social graph data.
 Creates nodes (students) and edges (relationships) CSVs.
+Produces a realistic, sparse social graph with Average Degree 8-15 and Density < 0.05.
 """
 
 import os
 import random
+from itertools import combinations
+import numpy as np
 import pandas as pd
 from faker import Faker
 
-# Initialize Faker
+# Initialize Faker and set seeds for reproducibility
 fake = Faker()
 Faker.seed(42)
+np.random.seed(42)
 random.seed(42)
 
 # Configuration
@@ -19,10 +23,11 @@ DEPARTMENTS = ['CS', 'EE', 'BBA', 'Psychology']
 BATCHES = [2021, 2022, 2023, 2024]
 SOCIETIES = ['Debating', 'ACM', 'Music', 'Sports', 'None']
 
-# Connection probabilities
-SAME_SOCIETY_PROB = 0.50      # 50% chance if same society
-SAME_BATCH_DEPT_PROB = 0.30   # 30% chance if same batch AND department
-RANDOM_NOISE_PROB = 0.05      # 5% random noise connections
+# Connection probabilities (Strict - for sparse graph)
+BASE_PROBABILITY = 0.0          # No connection by default
+SAME_SOCIETY_PROB = 0.08        # 8% if same society (excluding 'None')
+SAME_BATCH_DEPT_PROB = 0.05     # 5% if same batch AND department
+RANDOM_NOISE_PROB = 0.002       # 0.2% random baseline noise
 
 
 def generate_students(num_students: int) -> pd.DataFrame:
@@ -52,12 +57,13 @@ def generate_students(num_students: int) -> pd.DataFrame:
 
 def generate_edges(students_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Generate edges (relationships) between students based on rules.
+    Generate edges (relationships) between students based on strict probabilities.
     
-    Rules:
-    - 50% chance if same society (excluding 'None')
-    - 30% chance if same batch AND department
-    - 5% random noise connections
+    Probability Rules:
+    - Base: 0.0 (no connection by default)
+    - Same society (excluding 'None'): +0.08 (8%)
+    - Same batch AND department: +0.05 (5%)
+    - Random noise: +0.002 (0.2%)
     
     Args:
         students_df: DataFrame containing student information
@@ -65,45 +71,65 @@ def generate_edges(students_df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame with edge connections (source, target)
     """
-    edges = set()  # Use set to avoid duplicate edges
-    num_students = len(students_df)
+    edges = []
     
-    # Convert DataFrame to list of dicts for faster access
-    students = students_df.to_dict('records')
+    # Convert DataFrame to dictionary for faster lookup
+    students_dict = students_df.set_index('student_id').to_dict('index')
+    student_ids = list(students_dict.keys())
     
-    # Iterate through all pairs of students
-    for i in range(num_students):
-        for j in range(i + 1, num_students):
-            student_a = students[i]
-            student_b = students[j]
-            
-            connected = False
-            
-            # Rule 1: Same society (50% chance, excluding 'None')
-            if (student_a['society'] == student_b['society'] and 
-                student_a['society'] != 'None'):
-                if random.random() < SAME_SOCIETY_PROB:
-                    connected = True
-            
-            # Rule 2: Same batch AND department (30% chance)
-            if (student_a['batch'] == student_b['batch'] and 
-                student_a['department'] == student_b['department']):
-                if random.random() < SAME_BATCH_DEPT_PROB:
-                    connected = True
-            
-            # Rule 3: Random noise (5% chance)
-            if not connected and random.random() < RANDOM_NOISE_PROB:
-                connected = True
-            
-            if connected:
-                # Store edge as tuple (smaller_id, larger_id) to avoid duplicates
-                edge = (student_a['student_id'], student_b['student_id'])
-                edges.add(edge)
+    # Iterate through all possible pairs using combinations
+    for student_a_id, student_b_id in combinations(student_ids, 2):
+        student_a = students_dict[student_a_id]
+        student_b = students_dict[student_b_id]
+        
+        # Calculate connection probability
+        probability = BASE_PROBABILITY
+        
+        # Rule 1: Same society (excluding 'None') -> +8%
+        if (student_a['society'] == student_b['society'] and 
+            student_a['society'] != 'None'):
+            probability += SAME_SOCIETY_PROB
+        
+        # Rule 2: Same batch AND department -> +5%
+        if (student_a['batch'] == student_b['batch'] and 
+            student_a['department'] == student_b['department']):
+            probability += SAME_BATCH_DEPT_PROB
+        
+        # Rule 3: Random noise -> +0.2%
+        probability += RANDOM_NOISE_PROB
+        
+        # Determine if edge exists based on probability
+        if random.random() < probability:
+            edges.append({
+                'source': student_a_id,
+                'target': student_b_id
+            })
     
-    # Convert to DataFrame
-    edges_df = pd.DataFrame(list(edges), columns=['source', 'target'])
+    return pd.DataFrame(edges)
+
+
+def calculate_graph_stats(num_nodes: int, num_edges: int) -> dict:
+    """
+    Calculate graph statistics.
     
-    return edges_df
+    Args:
+        num_nodes: Number of nodes
+        num_edges: Number of edges
+        
+    Returns:
+        Dictionary with average degree and density
+    """
+    # Average degree = 2 * edges / nodes (each edge contributes to 2 node degrees)
+    average_degree = (2 * num_edges) / num_nodes if num_nodes > 0 else 0
+    
+    # Density = 2 * edges / (nodes * (nodes - 1)) for undirected graph
+    max_edges = num_nodes * (num_nodes - 1) / 2
+    density = num_edges / max_edges if max_edges > 0 else 0
+    
+    return {
+        'average_degree': round(average_degree, 2),
+        'density': round(density, 4)
+    }
 
 
 def save_data(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, data_dir: str = 'data'):
@@ -131,11 +157,15 @@ def save_data(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, data_dir: str = 'd
 
 def print_summary(nodes_df: pd.DataFrame, edges_df: pd.DataFrame):
     """Print a summary of the generated data."""
+    num_nodes = len(nodes_df)
+    num_edges = len(edges_df)
+    stats = calculate_graph_stats(num_nodes, num_edges)
+    
     print("\n" + "="*50)
     print("DATA GENERATION SUMMARY")
     print("="*50)
     
-    print(f"\n📊 Generated {len(nodes_df)} nodes and {len(edges_df)} edges")
+    print(f"\n📊 Generated {num_nodes} nodes and {num_edges} edges")
     
     print("\n📋 Department Distribution:")
     dept_counts = nodes_df['department'].value_counts()
@@ -152,23 +182,38 @@ def print_summary(nodes_df: pd.DataFrame, edges_df: pd.DataFrame):
     for society, count in society_counts.items():
         print(f"   • {society}: {count} students")
     
-    print("\n🔗 Edge Statistics:")
-    avg_connections = (2 * len(edges_df)) / len(nodes_df)
-    print(f"   • Average connections per student: {avg_connections:.2f}")
+    print("\n" + "="*50)
+    print("🔗 GRAPH STATISTICS (Sparsity Verification)")
+    print("="*50)
+    print(f"   • Average Degree: {stats['average_degree']} (Target: 8-15)")
+    print(f"   • Density: {stats['density']} (Target: < 0.05)")
+    
+    # Verification status
+    avg_deg_ok = 8 <= stats['average_degree'] <= 15
+    density_ok = stats['density'] < 0.05
+    
+    print("\n📈 Verification:")
+    print(f"   • Average Degree in range [8-15]: {'✅ PASS' if avg_deg_ok else '❌ FAIL'}")
+    print(f"   • Density < 0.05: {'✅ PASS' if density_ok else '❌ FAIL'}")
     print("="*50)
 
 
 if __name__ == "__main__":
-    print("🎓 University Social Graph Data Generator")
-    print("-" * 40)
+    print("🎓 University Social Graph Data Generator (Sparse Graph)")
+    print("-" * 50)
     
     # Generate students (nodes)
     print("\n⏳ Generating students...")
     nodes_df = generate_students(NUM_STUDENTS)
     print(f"✓ Generated {len(nodes_df)} students")
     
-    # Generate relationships (edges)
-    print("\n⏳ Generating relationships...")
+    # Generate relationships (edges) with strict probabilities
+    print("\n⏳ Generating relationships (sparse graph)...")
+    print("   Using probabilities:")
+    print(f"   • Same society (not 'None'): +{SAME_SOCIETY_PROB*100}%")
+    print(f"   • Same batch AND dept: +{SAME_BATCH_DEPT_PROB*100}%")
+    print(f"   • Random noise: +{RANDOM_NOISE_PROB*100}%")
+    
     edges_df = generate_edges(nodes_df)
     print(f"✓ Generated {len(edges_df)} relationships")
     
@@ -176,5 +221,5 @@ if __name__ == "__main__":
     print("\n⏳ Saving data to CSV files...")
     save_data(nodes_df, edges_df)
     
-    # Print summary
+    # Print summary with graph statistics
     print_summary(nodes_df, edges_df)
