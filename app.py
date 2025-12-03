@@ -51,16 +51,29 @@ def load_all_resources():
     # Load graph
     graph = load_graph()
     
+    # Convert all node IDs to Python int to avoid numpy.int64 issues
+    # Create a new graph with proper int node IDs
+    import networkx as nx
+    G_clean = nx.Graph()
+    
+    for node in graph.nodes():
+        node_int = int(node)
+        attrs = graph.nodes[node]
+        G_clean.add_node(node_int, **attrs)
+    
+    for edge in graph.edges():
+        G_clean.add_edge(int(edge[0]), int(edge[1]))
+    
     # Load model and encoders
     model, checkpoint = load_trained_model()
     encoders = load_encoders()
     
     # Prepare features and data
-    node_features, _ = prepare_node_features(graph, fit_encoders=False, encoders=encoders)
-    data = networkx_to_pyg(graph, node_features)
+    node_features, _ = prepare_node_features(G_clean, fit_encoders=False, encoders=encoders)
+    data = networkx_to_pyg(G_clean, node_features)
     node_mapping = data.node_mapping
     
-    return graph, model, data, node_mapping, checkpoint
+    return G_clean, model, data, node_mapping, checkpoint
 
 
 def create_pyvis_network(graph, highlight_student=None, show_only_neighbors=False, color_by='society'):
@@ -120,17 +133,19 @@ def create_pyvis_network(graph, highlight_student=None, show_only_neighbors=Fals
     
     # Determine which nodes to show
     if show_only_neighbors and highlight_student:
-        nodes_to_show = set([highlight_student]) | set(graph.neighbors(highlight_student))
+        neighbors = [int(n) for n in graph.neighbors(highlight_student)]
+        nodes_to_show = set([int(highlight_student)]) | set(neighbors)
     else:
         # Sample nodes for performance (show max 150 nodes)
-        all_nodes = list(graph.nodes())
+        all_nodes = [int(n) for n in graph.nodes()]
         if len(all_nodes) > 150:
             import random
             random.seed(42)
             nodes_to_show = set(random.sample(all_nodes, 150))
             if highlight_student:
-                nodes_to_show.add(highlight_student)
-                nodes_to_show.update(list(graph.neighbors(highlight_student))[:20])
+                nodes_to_show.add(int(highlight_student))
+                neighbors = [int(n) for n in graph.neighbors(highlight_student)][:20]
+                nodes_to_show.update(neighbors)
         else:
             nodes_to_show = set(all_nodes)
     
@@ -178,11 +193,11 @@ def create_pyvis_network(graph, highlight_student=None, show_only_neighbors=Fals
     
     # Add edges (only between visible nodes)
     for edge in graph.edges():
-        if edge[0] in nodes_to_show and edge[1] in nodes_to_show:
-            edge_0 = int(edge[0])
-            edge_1 = int(edge[1])
+        edge_0 = int(edge[0])
+        edge_1 = int(edge[1])
+        if edge_0 in nodes_to_show and edge_1 in nodes_to_show:
             # Highlight edges connected to selected student
-            if highlight_student and (edge[0] == highlight_student or edge[1] == highlight_student):
+            if highlight_student and (edge_0 == int(highlight_student) or edge_1 == int(highlight_student)):
                 net.add_edge(edge_0, edge_1, color='#FFD700', width=2)
             else:
                 net.add_edge(edge_0, edge_1, color='#CCCCCC', width=0.5)
